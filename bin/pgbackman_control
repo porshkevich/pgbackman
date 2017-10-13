@@ -50,6 +50,7 @@ import signal
 from pgbackman.logs import *
 from pgbackman.database import *
 from pgbackman.config import *
+from crontab import CronTab
 
 listen_list = []
 last_crontab_update = {}
@@ -134,15 +135,20 @@ def generate_crontab_backup_jobs(db,backup_server_id,pgsql_node_id):
     global last_crontab_update
 
     try:
-        crontab_file = db.get_pgsql_node_config_value(pgsql_node_id,'pgnode_crontab_file')
-    
-        with open(crontab_file,'w') as file:
-            data = db.generate_crontab_backup_jobs(backup_server_id,pgsql_node_id)
-            
-            file.write(data)
-            file.flush()
+        cron  = CronTab(user=True)
+        data = db.generate_crontab_backup_jobs(backup_server_id,pgsql_node_id)
 
-            logs.logger.info('Crontab file: %s created/updated',crontab_file)
+        for item in data:
+            job = next(cron.find_comment(item[2]), None)
+            if job is None:
+                job = cron.new(command=item[1], comment=item[2])
+            job.set_command(item[1])
+            job.set_comment(item[2])
+            job.setall(item[0])
+
+        cron.write()
+
+        logs.logger.info('Crontab job created/updated')
 
         last_crontab_update[str(pgsql_node_id)] = datetime.datetime.now()    
       

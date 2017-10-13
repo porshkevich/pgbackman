@@ -3347,7 +3347,11 @@ ALTER FUNCTION get_listen_channel_names(INTEGER) OWNER TO pgbackman_role_rw;
 -- Function: generate_crontab_file()
 -- ------------------------------------------------------------
 
-CREATE OR REPLACE FUNCTION generate_crontab_backup_jobs(INTEGER,INTEGER) RETURNS TEXT 
+CREATE OR REPLACE FUNCTION generate_crontab_backup_jobs(INTEGER,INTEGER) RETURNS TABLE (
+ cron_time text,
+ cron_command text,
+ cron_id text
+) 
  LANGUAGE plpgsql
  SECURITY INVOKER 
  SET search_path = public, pg_temp
@@ -3358,93 +3362,56 @@ CREATE OR REPLACE FUNCTION generate_crontab_backup_jobs(INTEGER,INTEGER) RETURNS
   backup_server_fqdn TEXT;
   pgsql_node_fqdn TEXT;
   pgsql_node_port TEXT;
-  job_row RECORD;
 
   node_cnt INTEGER;
 
-  logs_email TEXT := '';
-  pgnode_crontab_file TEXT := '';
   root_backup_dir TEXT := '';
-  admin_user TEXT := '';
   pgbackman_dump TEXT := '';
 
-  output TEXT := '';
 BEGIN
 
  SELECT count(*) FROM pgsql_node WHERE node_id = pgsql_node_id_ INTO node_cnt;	
 
  IF node_cnt = 0 THEN
-  RETURN output;
+  RETURN;
  END IF;
 
- logs_email := get_pgsql_node_config_value(pgsql_node_id_,'logs_email');
- pgnode_crontab_file := get_pgsql_node_config_value(pgsql_node_id_,'pgnode_crontab_file');
  root_backup_dir := get_backup_server_config_value(backup_server_id_,'root_backup_partition');
  backup_server_fqdn := get_backup_server_fqdn(backup_server_id_);
  pgsql_node_fqdn := get_pgsql_node_fqdn(pgsql_node_id_);
  pgsql_node_port := get_pgsql_node_port(pgsql_node_id_);
- admin_user := get_pgsql_node_admin_user(pgsql_node_id_);
  pgbackman_dump := get_backup_server_config_value(backup_server_id_,'pgbackman_dump');
 
- output := output || '# File: ' || COALESCE(pgnode_crontab_file,'') || E'\n';
- output := output || '# ' || E'\n';
- output := output || '# This crontab file is generated automatically' || E'\n';
- output := output || '# and contains the backup jobs to be run' || E'\n';
- output := output || '# for the PgSQL node ' || COALESCE(pgsql_node_fqdn,'') || E'\n';
- output := output || '# in the backup server ' || COALESCE(backup_server_fqdn,'') || E'\n';
- output := output || '# ' || E'\n';
- output := output || '# Generated: ' || now() || E'\n';
- output := output || '#' || E'\n';
-
- output := output || 'SHELL=/bin/bash' || E'\n';
- output := output || 'PATH=/sbin:/bin:/usr/sbin:/usr/bin' || E'\n';
- output := output || 'MAILTO=' || COALESCE(logs_email,'') || E'\n';
- output := output || E'\n';     
-
- --
- -- Generating backup jobs output for jobs
- -- with job_status = ACTIVE for a backup server
- -- and a PgSQL node 
- --
-
- FOR job_row IN (
- SELECT a.*
- FROM backup_definition a
- join pgsql_node b on a.pgsql_node_id = b.node_id
- WHERE a.backup_server_id = backup_server_id_
- AND a.pgsql_node_id = pgsql_node_id_
- AND a.job_status = 'ACTIVE'
- AND b.status = 'RUNNING'
- ORDER BY a.dbname,a.minutes_cron,a.hours_cron,a.day_month_cron,a.month_cron,a.weekday_cron,a.backup_code
- ) LOOP
-
-  output := output || COALESCE(job_row.minutes_cron, '*') || ' ' || COALESCE(job_row.hours_cron, '*') || ' ' || COALESCE(job_row.day_month_cron, '*') || ' ' || COALESCE(job_row.month_cron, '*') || ' ' || COALESCE(job_row.weekday_cron, '*');
-
-  output := output || ' pgbackman';
-  output := output || ' ' || pgbackman_dump || 
-  	    	   ' --node-fqdn ' || pgsql_node_fqdn ||
-		   ' --node-id ' || pgsql_node_id_ ||
-		   ' --node-port ' || pgsql_node_port ||
-		   ' --node-user ' || admin_user || 
-		   ' --def-id ' || job_row.def_id;
-
-  IF job_row.backup_code != 'CLUSTER' THEN
-     output := output || ' --dbname ' || job_row.dbname;
-  END IF;
-
-  output := output || ' --encryption ' || job_row.encryption::TEXT || 
-		      ' --backup-code ' || job_row.backup_code ||
-		      ' --root-backup-dir ' || root_backup_dir;
-
-  IF job_row.extra_backup_parameters != '' AND job_row.extra_backup_parameters IS NOT NULL THEN
-    output := output || ' --extra-backup-parameters "''' || job_row.extra_backup_parameters || '''"';
-  END IF;
- 
-  output := output || E'\n';
-
- END LOOP;
-
- RETURN output;
+ RETURN QUERY SELECT 
+  COALESCE(a.minutes_cron, '*') || ' ' || COALESCE(a.hours_cron, '*') || ' ' || COALESCE(a.day_month_cron, '*') || ' ' || COALESCE(a.month_cron, '*') || ' ' || COALESCE(a.weekday_cron, '*') as time, 
+  pgbackman_dump || 
+   ' --node-fqdn ' || pgsql_node_fqdn ||
+   ' --node-id ' || pgsql_node_id_ ||
+   ' --node-port ' || pgsql_node_port ||
+   ' --node-user ' || admin_user || 
+   ' --def-id ' || a.def_id ||
+   CASE WHEN a.backup_code != 'CLUSTER' THEN
+     ' --dbname ' || a.dbname
+   ELSE
+     ''
+   END || 
+   ' --encryption ' || a.encryption::TEXT || 
+   ' --backup-code ' || a.backup_code ||
+   ' --root-backup-dir ' || root_backup_dir ||
+   CASE WHEN a.extra_backup_parameters != '' AND a.extra_backup_parameters IS NOT NULL THEN
+    ' --extra-backup-parameters "''' || a.extra_backup_parameters || '''"'
+   ELSE
+    ''
+   END
+   as command,
+   'def_' || a.def_id || '_node_' || a.pgsql_node_id
+  FROM backup_definition a
+  join pgsql_node b on a.pgsql_node_id = b.node_id
+  WHERE a.backup_server_id = backup_server_id_
+  AND a.pgsql_node_id = pgsql_node_id_
+  AND a.job_status = 'ACTIVE'
+  AND b.status = 'RUNNING'
+ ORDER BY a.dbname,a.minutes_cron,a.hours_cron,a.day_month_cron,a.month_cron,a.weekday_cron,a.backup_code;
 END;
 $$;
 

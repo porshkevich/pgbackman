@@ -1255,9 +1255,9 @@ class PgbackmanDB():
  
             if self.cur:
                 try:
-                    self.cur.execute('SELECT generate_crontab_backup_jobs(%s,%s)',(backup_server_id,pgsql_node_id))
+                    self.cur.execute('SELECT * FROM generate_crontab_backup_jobs(%s,%s)',(backup_server_id,pgsql_node_id))
                     
-                    data = self.cur.fetchone()[0]
+                    data = self.cur.fetchall()
                     return data
                     
                 except psycopg2.Error as e:
